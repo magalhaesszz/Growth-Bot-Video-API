@@ -5,11 +5,15 @@ import os
 import random
 import subprocess
 import time
+import re
+from collections import Counter
 from pathlib import Path
 
 from core.config import DEFAULT_CONFIG, TIMEOUT_FFMPEG
 
 logger = logging.getLogger(__name__)
+
+_CROP_RE = re.compile(r"crop=(\d+):(\d+):(\d+):(\d+)")
 
 
 # ─── FFprobe ─────────────────────────────────────────────────
@@ -39,6 +43,51 @@ def probe_video(path: str) -> dict:
         "width":  int(video_stream.get("width",  0)) if video_stream else 0,
         "height": int(video_stream.get("height", 0)) if video_stream else 0,
     }
+
+
+def _select_stable_crop(output: str, src_w: int, src_h: int) -> tuple[int, int, int, int] | None:
+    candidates = [tuple(map(int, match)) for match in _CROP_RE.findall(output)]
+    valid = []
+    for width, height, x, y in candidates:
+        if width <= 0 or height <= 0 or x < 0 or y < 0:
+            continue
+        if x + width > src_w + 2 or y + height > src_h + 2:
+            continue
+        retained = width * height / max(1, src_w * src_h)
+        removed = 1.0 - retained
+        if retained >= 0.35 and removed >= 0.015:
+            valid.append((width, height, x, y))
+    if not valid:
+        return None
+    crop, count = Counter(valid).most_common(1)[0]
+    # Exige repetição em vários frames para não confundir uma cena escura/clara com borda.
+    return crop if count >= 2 else None
+
+
+def detect_auto_crop(path: str, info: dict, cfg: dict) -> tuple[int, int, int, int] | None:
+    if not cfg.get("auto_crop_borders", True):
+        return None
+    limit = max(0, min(255, int(cfg.get("auto_crop_limit", 24))))
+    duration = min(max(info.get("duration", 0), 1), 20)
+    detected = []
+    for prefix in ("", "negate,"):
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "info", "-threads", "1",
+            "-i", path, "-t", str(duration),
+            "-vf", f"fps=2,{prefix}cropdetect={limit}:2:0",
+            "-an", "-f", "null", "-",
+        ]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+        except subprocess.TimeoutExpired:
+            continue
+        crop = _select_stable_crop(proc.stderr or "", info["width"], info["height"])
+        if crop:
+            detected.append(crop)
+    if not detected:
+        return None
+    # Prefere o maior conteúdo estável; evita que uma das passagens corte demais.
+    return max(detected, key=lambda item: item[0] * item[1])
 
 
 # ─── Anti-ban ────────────────────────────────────────────────
@@ -98,6 +147,10 @@ def build_filter(cfg: dict, params: dict, src_w: int, src_h: int) -> str:
             vf.append(f"drawbox=x={x}:y={y}:w={mw}:h={mh}:color=black:t=fill")
         else:
             vf.append(f"delogo=x={x}:y={y}:w={mw}:h={mh}")
+
+    detected_crop = cfg.get("_detected_crop")
+    if detected_crop:
+        vf.append("crop=" + ":".join(str(int(value)) for value in detected_crop))
 
     vf += [
         f"setpts=PTS/{speed}",
@@ -196,6 +249,7 @@ def render_preview(input_path: str, fundo_path: str, output_path: str, cfg: dict
     except Exception as exc:
         return {"ok": False, "error": f"FFprobe falhou: {exc}"}
 
+    cfg["_detected_crop"] = detect_auto_crop(input_path, info, cfg)
     params = {"speed": 1.0, "brightness": 0.0, "saturation": 0.0, "zoom": 1.0, "flip": False}
     fc = build_filter(cfg, params, info["width"], info["height"])
     cmd = [
@@ -235,6 +289,8 @@ def process_video(
         info = probe_video(input_path)
     except Exception as e:
         return {"ok": False, "error": f"FFprobe falhou: {e}"}
+
+    cfg["_detected_crop"] = detect_auto_crop(input_path, info, cfg)
 
     if info["duration"] - cfg["trim_start"] < 2.0:
         return {"ok": False, "error": "Vídeo muito curto (mínimo 2 segundos úteis)."}

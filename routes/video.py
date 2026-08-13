@@ -13,7 +13,7 @@ from core.config import (
     API_SECRET, FUNDO_DIR, INPUT_DIR, OUTPUT_DIR,
     MAX_FUNDO_MB, MAX_VIDEO_MB, DEFAULT_CONFIG,
 )
-from video.processor import process_video, render_preview
+from video.processor import detect_auto_crop, probe_video, process_video, render_preview
 from video.validator import validate_fundo, validate_video
 from editor_ui import editor_html
 
@@ -212,8 +212,14 @@ async def criar_editor_session(
         ok_v, msg_v = validate_video(input_path, MAX_VIDEO_MB)
         if not ok_v:
             raise HTTPException(400, msg_v)
+        info = probe_video(input_path)
+        detected_crop = detect_auto_crop(input_path, info, {**DEFAULT_CONFIG, **cfg})
+        frame_cmd = ["ffmpeg", "-y", "-loglevel", "error", "-threads", "1", "-ss", "0.1", "-i", input_path]
+        if detected_crop:
+            frame_cmd += ["-vf", "crop=" + ":".join(str(value) for value in detected_crop)]
+        frame_cmd += ["-frames:v", "1", "-q:v", "2", frame_path]
         proc = subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error", "-threads", "1", "-ss", "0.1", "-i", input_path, "-frames:v", "1", "-q:v", "2", frame_path],
+            frame_cmd,
             capture_output=True, text=True, timeout=60,
         )
         if proc.returncode != 0 or not os.path.exists(frame_path):

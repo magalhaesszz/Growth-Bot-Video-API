@@ -40,4 +40,6 @@ DEFAULT_CONFIG = {
     "flip_chance":    0.5,
     "watermark_masks": [],
     "antiban":        True,
+    "auto_crop_borders": True,      # remove letterbox/pillarbox preto ou branco
+    "auto_crop_limit":  24,         # sensibilidade do cropdetect (0-255)
 }
