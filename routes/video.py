@@ -12,7 +12,7 @@ from core.config import (
     API_SECRET, FUNDO_DIR, INPUT_DIR, OUTPUT_DIR,
     MAX_FUNDO_MB, MAX_VIDEO_MB,
 )
-from video.processor import process_video
+from video.processor import process_video, render_preview
 from video.validator import validate_fundo, validate_video
 
 router = APIRouter()
@@ -133,6 +133,45 @@ async def processar_video(
         filename=f"editado_{video.filename}",
         background=_cleanup_after(output_path),
     )
+
+
+@router.post("/preview")
+async def preview_video(
+    video: UploadFile = File(...),
+    account_id: str = Form("default"),
+    config_json: str = Form("{}"),
+    x_api_secret: Optional[str] = Header(None),
+):
+    """Retorna uma imagem JPG do layout antes do processamento final."""
+    _auth(x_api_secret)
+    fundo_path = _fundos.get(account_id)
+    if not fundo_path or not os.path.exists(fundo_path):
+        raise HTTPException(400, f"Nenhum fundo cadastrado para conta '{account_id}'.")
+    if not video.filename.lower().endswith(".mp4"):
+        raise HTTPException(400, "Envie um arquivo .mp4.")
+    try:
+        cfg = json.loads(config_json)
+    except Exception:
+        raise HTTPException(400, "config_json inválido.")
+
+    job_id = str(uuid.uuid4())[:8]
+    input_path = os.path.join(INPUT_DIR, f"{job_id}_preview_in.mp4")
+    output_path = os.path.join(OUTPUT_DIR, f"{job_id}_preview.jpg")
+    _save_upload(video, input_path)
+    try:
+        ok_v, msg_v = validate_video(input_path, MAX_VIDEO_MB)
+        if not ok_v:
+            raise HTTPException(400, msg_v)
+        result = render_preview(input_path, fundo_path, output_path, cfg)
+        if not result["ok"]:
+            raise HTTPException(500, result.get("error", "Falha ao gerar preview."))
+        return FileResponse(
+            output_path, media_type="image/jpeg", filename="preview.jpg",
+            background=_cleanup_after(output_path),
+        )
+    finally:
+        if os.path.exists(input_path):
+            os.remove(input_path)
 
 
 # ─── POST /processar/lote ────────────────────────────────────

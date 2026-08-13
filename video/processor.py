@@ -106,8 +106,11 @@ def build_filter(cfg: dict, params: dict, src_w: int, src_h: int) -> str:
         f"eq=brightness={brightness}:saturation={saturation:.4f}",
     ]
 
-    ov_x = f"({cw}-overlay_w)/2" if px == "center" else str(int(px))
-    ov_y = int(ch * py)
+    anchors = {"left": 0.0, "center": 0.5, "right": 1.0}
+    px = max(0.0, min(1.0, float(anchors.get(px, px))))
+    py = max(0.0, min(1.0, float(py)))
+    ov_x = f"(main_w-overlay_w)*{px:.4f}"
+    ov_y = f"(main_h-overlay_h)*{py:.4f}"
 
     return (
         f"[0:v]scale={cw}:{ch}[bg];"
@@ -178,6 +181,33 @@ def render(
 
     lines = [l for l in (proc.stderr or "").splitlines() if l.strip()]
     return False, lines[-1] if lines else f"FFmpeg código {proc.returncode}"
+
+
+def render_preview(input_path: str, fundo_path: str, output_path: str, cfg: dict = None) -> dict:
+    """Renderiza o primeiro frame com o mesmo layout usado no vídeo final."""
+    cfg = {**DEFAULT_CONFIG, **(cfg or {})}
+    try:
+        info = probe_video(input_path)
+    except Exception as exc:
+        return {"ok": False, "error": f"FFprobe falhou: {exc}"}
+
+    params = {"speed": 1.0, "brightness": 0.0, "saturation": 0.0, "zoom": 1.0, "flip": False}
+    fc = build_filter(cfg, params, info["width"], info["height"])
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-loop", "1", "-i", fundo_path,
+        "-ss", str(cfg.get("trim_start", DEFAULT_CONFIG["trim_start"])), "-i", input_path,
+        "-filter_complex", fc, "-map", "[out]",
+        "-frames:v", "1", "-q:v", "2", output_path,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Timeout ao gerar preview."}
+    if proc.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+        return {"ok": True}
+    lines = [line for line in (proc.stderr or "").splitlines() if line.strip()]
+    return {"ok": False, "error": lines[-1] if lines else "Falha ao gerar preview."}
 
 
 # ─── Função principal ────────────────────────────────────────

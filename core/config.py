@@ -25,8 +25,8 @@ DEFAULT_CONFIG = {
     "canvas_width":   1080,
     "canvas_height":  1920,
     "video_width":    800,
-    "position_x":     "center",
-    "position_y":     0.25,
+    "position_x":     0.5,          # 0=esquerda, 0.5=centro, 1=direita
+    "position_y":     0.25,         # 0=topo, 0.5=centro, 1=base
     "output_fps":     30,
     "output_crf":     18,
     "output_preset":  "fast",       # Railway tem CPU limitada — "fast" é melhor que "slow"
