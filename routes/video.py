@@ -3,22 +3,35 @@ import os
 import shutil
 import time
 import uuid
+import subprocess
 from typing import Optional
 
-from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import APIRouter, Body, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse
 
 from core.config import (
     API_SECRET, FUNDO_DIR, INPUT_DIR, OUTPUT_DIR,
-    MAX_FUNDO_MB, MAX_VIDEO_MB,
+    MAX_FUNDO_MB, MAX_VIDEO_MB, DEFAULT_CONFIG,
 )
 from video.processor import process_video, render_preview
 from video.validator import validate_fundo, validate_video
+from editor_ui import editor_html
 
 router = APIRouter()
 
 # Fundo padrão persistido por conta (key = account_id, value = path)
 _fundos: dict[str, str] = {}
+_editor_sessions: dict[str, dict] = {}
+
+
+def _cleanup_editor_sessions(max_age_s: int = 3600):
+    now = time.time()
+    expired = [token for token, session in _editor_sessions.items() if now - session["created_at"] > max_age_s]
+    for token in expired:
+        session = _editor_sessions.pop(token)
+        frame_path = session.get("frame_path")
+        if frame_path and os.path.exists(frame_path):
+            os.remove(frame_path)
 
 
 def _auth(secret: Optional[str]):
@@ -172,6 +185,98 @@ async def preview_video(
     finally:
         if os.path.exists(input_path):
             os.remove(input_path)
+
+
+@router.post("/editor/session")
+async def criar_editor_session(
+    request: Request,
+    video: UploadFile = File(...),
+    account_id: str = Form("default"),
+    config_json: str = Form("{}"),
+    x_api_secret: Optional[str] = Header(None),
+):
+    _auth(x_api_secret)
+    _cleanup_editor_sessions()
+    fundo_path = _fundos.get(account_id)
+    if not fundo_path or not os.path.exists(fundo_path):
+        raise HTTPException(400, "Envie o fundo antes de abrir o editor.")
+    try:
+        cfg = json.loads(config_json)
+    except Exception:
+        raise HTTPException(400, "config_json inválido.")
+    token = uuid.uuid4().hex
+    input_path = os.path.join(INPUT_DIR, f"{token}_editor.mp4")
+    frame_path = os.path.join(OUTPUT_DIR, f"{token}_frame.jpg")
+    _save_upload(video, input_path)
+    try:
+        ok_v, msg_v = validate_video(input_path, MAX_VIDEO_MB)
+        if not ok_v:
+            raise HTTPException(400, msg_v)
+        proc = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-threads", "1", "-ss", "0.1", "-i", input_path, "-frames:v", "1", "-q:v", "2", frame_path],
+            capture_output=True, text=True, timeout=60,
+        )
+        if proc.returncode != 0 or not os.path.exists(frame_path):
+            raise HTTPException(500, "Não foi possível extrair o frame para o editor.")
+    finally:
+        if os.path.exists(input_path):
+            os.remove(input_path)
+    cfg = {**DEFAULT_CONFIG, **cfg}
+    _editor_sessions[token] = {
+        "account_id": account_id, "fundo_path": fundo_path, "frame_path": frame_path,
+        "config": cfg, "created_at": time.time(),
+    }
+    editor_url = str(request.base_url).rstrip("/") + f"/api/v1/editor/{token}"
+    return {"ok": True, "token": token, "editor_url": editor_url}
+
+
+def _editor(token: str) -> dict:
+    _cleanup_editor_sessions()
+    session = _editor_sessions.get(token)
+    if not session:
+        raise HTTPException(404, "Sessão do editor expirada.")
+    return session
+
+
+@router.get("/editor/{token}", response_class=HTMLResponse)
+async def abrir_editor(token: str):
+    _editor(token)
+    return editor_html(token)
+
+
+@router.get("/editor/{token}/background")
+async def editor_background(token: str):
+    return FileResponse(_editor(token)["fundo_path"])
+
+
+@router.get("/editor/{token}/frame")
+async def editor_frame(token: str):
+    return FileResponse(_editor(token)["frame_path"], media_type="image/jpeg")
+
+
+@router.get("/editor/{token}/config")
+async def editor_config(token: str):
+    return _editor(token)["config"]
+
+
+@router.put("/editor/{token}/config")
+async def salvar_editor_config(token: str, config: dict = Body(...)):
+    try:
+        values = {
+            "video_width": max(100, min(1080, int(config["video_width"]))),
+            "position_x": max(0.0, min(1.0, float(config["position_x"]))),
+            "position_y": max(0.0, min(1.0, float(config["position_y"]))),
+        }
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(400, "Configuração inválida.")
+    _editor(token)["config"].update(values)
+    return {"ok": True}
+
+
+@router.get("/editor/{token}/result")
+async def editor_result(token: str, x_api_secret: Optional[str] = Header(None)):
+    _auth(x_api_secret)
+    return {"ok": True, "config": _editor(token)["config"]}
 
 
 # ─── POST /processar/lote ────────────────────────────────────

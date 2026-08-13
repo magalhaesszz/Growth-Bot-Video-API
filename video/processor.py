@@ -141,6 +141,8 @@ def render(
     cmd = [
         "ffmpeg", "-y",
         "-loglevel", "error",
+        "-filter_threads", "1",
+        "-filter_complex_threads", "1",
         "-loop", "1",
         "-i", fundo_path,
         "-ss", str(trim),
@@ -154,6 +156,7 @@ def render(
         cmd += ["-map", "1:a"]
     cmd += [
         "-c:v", "libx264",
+        "-threads", "1",
         "-crf", str(crf),
         "-preset", preset,
         "-pix_fmt", "yuv420p",
@@ -180,6 +183,8 @@ def render(
         return True, "ok"
 
     lines = [l for l in (proc.stderr or "").splitlines() if l.strip()]
+    if proc.returncode in {-9, 137}:
+        return False, "O Railway encerrou o FFmpeg por falta de memoria. Tente um video menor ou aumente a memoria do servico."
     return False, lines[-1] if lines else f"FFmpeg código {proc.returncode}"
 
 
