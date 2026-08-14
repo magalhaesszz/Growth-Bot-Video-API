@@ -4,10 +4,12 @@ import shutil
 import time
 import uuid
 import subprocess
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Body, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
+from starlette.concurrency import run_in_threadpool
 
 from core.config import (
     API_SECRET, FUNDO_DIR, INPUT_DIR, OUTPUT_DIR,
@@ -22,6 +24,36 @@ router = APIRouter()
 # Fundo padrão persistido por conta (key = account_id, value = path)
 _fundos: dict[str, str] = {}
 _editor_sessions: dict[str, dict] = {}
+
+
+def _safe_account_id(account_id: str) -> str:
+    value = str(account_id).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", value):
+        raise HTTPException(400, "Identificador de conta invalido.")
+    return value
+
+
+def _find_fundo(account_id: str) -> Optional[str]:
+    """Recupera o fundo do disco mesmo depois de um restart da API."""
+    account_id = _safe_account_id(account_id)
+    cached = _fundos.get(account_id)
+    if cached and os.path.isfile(cached):
+        return cached
+    for ext in (".png", ".jpg", ".jpeg"):
+        candidate = os.path.join(FUNDO_DIR, f"{account_id}{ext}")
+        if os.path.isfile(candidate):
+            _fundos[account_id] = candidate
+            return candidate
+    return None
+
+
+def _load_fundos_from_disk() -> None:
+    for filename in os.listdir(FUNDO_DIR):
+        stem, ext = os.path.splitext(filename)
+        if ext.lower() in {".png", ".jpg", ".jpeg"} and re.fullmatch(
+            r"[A-Za-z0-9_-]{1,80}", stem
+        ):
+            _fundos[stem] = os.path.join(FUNDO_DIR, filename)
 
 
 def _cleanup_editor_sessions(max_age_s: int = 3600):
@@ -54,6 +86,7 @@ async def salvar_fundo(
 ):
     """Salva a imagem de fundo para uma conta. Deve ser PNG 1080x1920."""
     _auth(x_api_secret)
+    account_id = _safe_account_id(account_id)
 
     if not fundo.filename.lower().endswith((".png", ".jpg", ".jpeg")):
         raise HTTPException(400, "Envie uma imagem PNG ou JPG.")
@@ -62,11 +95,15 @@ async def salvar_fundo(
     if size_mb > MAX_FUNDO_MB:
         raise HTTPException(400, f"Imagem muito grande ({size_mb:.1f} MB, máximo {MAX_FUNDO_MB} MB).")
 
-    ext  = os.path.splitext(fundo.filename)[1]
+    ext = os.path.splitext(fundo.filename)[1].lower()
+    for old_ext in (".png", ".jpg", ".jpeg"):
+        old_path = os.path.join(FUNDO_DIR, f"{account_id}{old_ext}")
+        if old_ext != ext.lower() and os.path.isfile(old_path):
+            os.remove(old_path)
     path = os.path.join(FUNDO_DIR, f"{account_id}{ext}")
-    _save_upload(fundo, path)
+    await run_in_threadpool(_save_upload, fundo, path)
 
-    ok, msg = validate_fundo(path)
+    ok, msg = await run_in_threadpool(validate_fundo, path)
     if not ok:
         os.remove(path)
         raise HTTPException(400, msg)
@@ -83,7 +120,7 @@ async def ver_fundo(
     x_api_secret: Optional[str] = Header(None),
 ):
     _auth(x_api_secret)
-    path = _fundos.get(account_id)
+    path = _find_fundo(account_id)
     if not path or not os.path.exists(path):
         raise HTTPException(404, "Nenhum fundo cadastrado para essa conta.")
     return FileResponse(path, media_type="image/png", filename="fundo.png")
@@ -104,7 +141,7 @@ async def processar_video(
     """
     _auth(x_api_secret)
 
-    fundo_path = _fundos.get(account_id)
+    fundo_path = _find_fundo(account_id)
     if not fundo_path or not os.path.exists(fundo_path):
         raise HTTPException(400, f"Nenhum fundo cadastrado para conta '{account_id}'. Use POST /fundo primeiro.")
 
@@ -120,19 +157,15 @@ async def processar_video(
     input_path  = os.path.join(INPUT_DIR,  f"{job_id}_in.mp4")
     output_path = os.path.join(OUTPUT_DIR, f"{job_id}_out.mp4")
 
-    _save_upload(video, input_path)
+    await run_in_threadpool(_save_upload, video, input_path)
 
-    ok_v, msg_v = validate_video(input_path, MAX_VIDEO_MB)
+    ok_v, msg_v = await run_in_threadpool(validate_video, input_path, MAX_VIDEO_MB)
     if not ok_v:
         os.remove(input_path)
         raise HTTPException(400, msg_v)
 
-    result = process_video(
-        input_path=input_path,
-        fundo_path=fundo_path,
-        output_path=output_path,
-        cfg=cfg,
-        filename=video.filename,
+    result = await run_in_threadpool(
+        process_video, input_path, fundo_path, output_path, cfg, video.filename
     )
 
     os.remove(input_path)
@@ -157,7 +190,7 @@ async def preview_video(
 ):
     """Retorna uma imagem JPG do layout antes do processamento final."""
     _auth(x_api_secret)
-    fundo_path = _fundos.get(account_id)
+    fundo_path = _find_fundo(account_id)
     if not fundo_path or not os.path.exists(fundo_path):
         raise HTTPException(400, f"Nenhum fundo cadastrado para conta '{account_id}'.")
     if not video.filename.lower().endswith(".mp4"):
@@ -170,12 +203,12 @@ async def preview_video(
     job_id = str(uuid.uuid4())[:8]
     input_path = os.path.join(INPUT_DIR, f"{job_id}_preview_in.mp4")
     output_path = os.path.join(OUTPUT_DIR, f"{job_id}_preview.jpg")
-    _save_upload(video, input_path)
+    await run_in_threadpool(_save_upload, video, input_path)
     try:
-        ok_v, msg_v = validate_video(input_path, MAX_VIDEO_MB)
+        ok_v, msg_v = await run_in_threadpool(validate_video, input_path, MAX_VIDEO_MB)
         if not ok_v:
             raise HTTPException(400, msg_v)
-        result = render_preview(input_path, fundo_path, output_path, cfg)
+        result = await run_in_threadpool(render_preview, input_path, fundo_path, output_path, cfg)
         if not result["ok"]:
             raise HTTPException(500, result.get("error", "Falha ao gerar preview."))
         return FileResponse(
@@ -197,7 +230,7 @@ async def criar_editor_session(
 ):
     _auth(x_api_secret)
     _cleanup_editor_sessions()
-    fundo_path = _fundos.get(account_id)
+    fundo_path = _find_fundo(account_id)
     if not fundo_path or not os.path.exists(fundo_path):
         raise HTTPException(400, "Envie o fundo antes de abrir o editor.")
     try:
@@ -207,20 +240,21 @@ async def criar_editor_session(
     token = uuid.uuid4().hex
     input_path = os.path.join(INPUT_DIR, f"{token}_editor.mp4")
     frame_path = os.path.join(OUTPUT_DIR, f"{token}_frame.jpg")
-    _save_upload(video, input_path)
+    await run_in_threadpool(_save_upload, video, input_path)
     try:
-        ok_v, msg_v = validate_video(input_path, MAX_VIDEO_MB)
+        ok_v, msg_v = await run_in_threadpool(validate_video, input_path, MAX_VIDEO_MB)
         if not ok_v:
             raise HTTPException(400, msg_v)
-        info = probe_video(input_path)
-        detected_crop = detect_auto_crop(input_path, info, {**DEFAULT_CONFIG, **cfg})
+        info = await run_in_threadpool(probe_video, input_path)
+        detected_crop = await run_in_threadpool(
+            detect_auto_crop, input_path, info, {**DEFAULT_CONFIG, **cfg}
+        )
         frame_cmd = ["ffmpeg", "-y", "-loglevel", "error", "-threads", "1", "-ss", "0.1", "-i", input_path]
         if detected_crop:
             frame_cmd += ["-vf", "crop=" + ":".join(str(value) for value in detected_crop)]
         frame_cmd += ["-frames:v", "1", "-q:v", "2", frame_path]
-        proc = subprocess.run(
-            frame_cmd,
-            capture_output=True, text=True, timeout=60,
+        proc = await run_in_threadpool(
+            subprocess.run, frame_cmd, capture_output=True, text=True, timeout=60
         )
         if proc.returncode != 0 or not os.path.exists(frame_path):
             raise HTTPException(500, "Não foi possível extrair o frame para o editor.")
@@ -303,7 +337,7 @@ async def processar_lote(
     if len(videos) > 10:
         raise HTTPException(400, "Máximo de 10 vídeos por lote.")
 
-    fundo_path = _fundos.get(account_id)
+    fundo_path = _find_fundo(account_id)
     if not fundo_path or not os.path.exists(fundo_path):
         raise HTTPException(400, f"Nenhum fundo cadastrado para conta '{account_id}'.")
 
@@ -318,20 +352,16 @@ async def processar_lote(
         input_path  = os.path.join(INPUT_DIR,  f"{job_id}_in.mp4")
         output_path = os.path.join(OUTPUT_DIR, f"{job_id}_out.mp4")
 
-        _save_upload(video, input_path)
+        await run_in_threadpool(_save_upload, video, input_path)
 
-        ok_v, msg_v = validate_video(input_path, MAX_VIDEO_MB)
+        ok_v, msg_v = await run_in_threadpool(validate_video, input_path, MAX_VIDEO_MB)
         if not ok_v:
             os.remove(input_path)
             resultados.append({"arquivo": video.filename, "ok": False, "error": msg_v})
             continue
 
-        result = process_video(
-            input_path=input_path,
-            fundo_path=fundo_path,
-            output_path=output_path,
-            cfg=cfg,
-            filename=video.filename,
+        result = await run_in_threadpool(
+            process_video, input_path, fundo_path, output_path, cfg, video.filename
         )
         os.remove(input_path)
 
@@ -357,6 +387,8 @@ async def processar_lote(
 async def download(job_id: str, x_api_secret: Optional[str] = Header(None)):
     """Download de um vídeo processado em lote."""
     _auth(x_api_secret)
+    if not re.fullmatch(r"[a-f0-9]{8}", job_id):
+        raise HTTPException(400, "Identificador de arquivo invalido.")
     path = os.path.join(OUTPUT_DIR, f"{job_id}_out.mp4")
     if not os.path.exists(path):
         raise HTTPException(404, "Arquivo não encontrado ou já expirou.")
@@ -373,6 +405,7 @@ async def download(job_id: str, x_api_secret: Optional[str] = Header(None)):
 async def status(x_api_secret: Optional[str] = Header(None)):
     """Retorna status da API e informações do ambiente."""
     _auth(x_api_secret)
+    _load_fundos_from_disk()
     import shutil as sh
     import subprocess
     ffmpeg_ok = False

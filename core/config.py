@@ -4,7 +4,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ─── Segurança ───────────────────────────────────────────────
-API_SECRET = os.getenv("API_SECRET", "change-me-in-production")
+API_SECRET = os.getenv("API_SECRET", "").strip()
+if not API_SECRET:
+    raise RuntimeError("A variavel obrigatoria API_SECRET nao foi configurada.")
 
 # ─── Diretórios de trabalho ──────────────────────────────────
 TMP_DIR   = os.path.join("/tmp", "video-api")
