@@ -17,6 +17,9 @@ FUNDO_DIR = os.path.join(TMP_DIR, "fundos")
 for d in [INPUT_DIR, OUTPUT_DIR, FUNDO_DIR]:
     os.makedirs(d, exist_ok=True)
 
+# ─── Proxy (para TikTok e Instagram via IP residencial) ─────
+PROXY_URL = os.getenv("PROXY_URL", "")  # formato: http://user:pass@host:port
+
 # ─── Limites ─────────────────────────────────────────────────
 MAX_VIDEO_MB      = 200          # tamanho máximo do vídeo de entrada
 MAX_FUNDO_MB      = 10
