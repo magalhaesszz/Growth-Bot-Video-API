@@ -33,6 +33,8 @@ async def editar_video(
     caption_text: str    = Form(""),
     crop_start: float    = Form(0.0),
     crop_end: float      = Form(0.0),
+    speed: float         = Form(0.0),
+    flip: bool           = Form(False),
     x_api_secret: str    = Header(...),
 ):
     _auth(x_api_secret)
@@ -53,6 +55,25 @@ async def editar_video(
     if crop_end > 0 and crop_end > crop_start:
         time_args += ["-t", str(crop_end - crop_start)]
 
+    # Velocidade
+    if speed and speed != 1.0 and 0.25 <= speed <= 4.0:
+        # setpts para video, atempo para audio
+        pts = round(1.0 / speed, 4)
+        vf_filters.append(f"setpts={pts}*PTS")
+        # atempo suporta 0.5-2.0; encadear se necessario
+        if 0.5 <= speed <= 2.0:
+            af_filters = [f"atempo={speed}"]
+        elif speed > 2.0:
+            af_filters = ["atempo=2.0", f"atempo={round(speed/2.0,4)}"]
+        else:  # speed < 0.5
+            af_filters = ["atempo=0.5", f"atempo={round(speed/0.5,4)}"]
+    else:
+        af_filters = []
+
+    # Espelhar
+    if flip:
+        vf_filters.append("hflip")
+
     if watermark_text:
         wm = _safe_text(watermark_text)
         vf_filters.append(
@@ -70,6 +91,8 @@ async def editar_video(
     cmd = ["ffmpeg", "-y"] + time_args + ["-i", str(input_path)]
     if vf_filters:
         cmd += ["-vf", ",".join(vf_filters)]
+    if af_filters:
+        cmd += ["-af", ",".join(af_filters)]
     cmd += ["-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart", str(output_path)]
 
     logger.info(f"[editar] job={job_id}")
