@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-from config import API_SECRET
+from core.config import API_SECRET
 
 logger = logging.getLogger("video-api.edit")
 router = APIRouter()
