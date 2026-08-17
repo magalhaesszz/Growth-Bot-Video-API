@@ -1,5 +1,4 @@
 import logging
-import os
 import re
 import subprocess
 import tempfile
@@ -10,7 +9,7 @@ from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from core.config import API_SECRET
+from core.config import API_SECRET, PROXY_URL
 
 logger = logging.getLogger("video-api.download")
 router = APIRouter()
@@ -22,9 +21,6 @@ SUPPORTED = re.compile(
 TMP = Path(tempfile.gettempdir()) / "video_downloads"
 TMP.mkdir(exist_ok=True)
 
-# Arquivo de cookies do TikTok (opcional — melhora compatibilidade)
-COOKIES_FILE = Path("/tmp/tiktok_cookies.txt")
-
 
 def _auth(secret: str):
     if secret != API_SECRET:
@@ -35,30 +31,37 @@ class DownloadRequest(BaseModel):
     url: str
 
 
-def _build_cmd(url: str, out_tmpl: str) -> list[str]:
-    """Monta o comando yt-dlp com as melhores opções para cada plataforma."""
+def _build_cmd(url: str, out_tmpl: str, attempt: int = 1) -> list[str]:
     is_tiktok = "tiktok.com" in url
 
     cmd = [
         "yt-dlp",
         "--no-playlist",
-        "--format", "mp4/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "--merge-output-format", "mp4",
         "--output", out_tmpl,
         "--no-warnings",
         "--quiet",
         "--no-check-certificates",
-        "--add-header", "User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
     ]
 
-    if is_tiktok:
-        # Opções específicas para TikTok
+    # Usar proxy residencial se configurado
+    if PROXY_URL:
+        cmd += ["--proxy", PROXY_URL]
+        logger.info(f"[download] Usando proxy: {PROXY_URL.split('@')[-1]}")
+
+    if attempt == 1:
         cmd += [
-            "--extractor-args", "tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com",
+            "--format", "mp4/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "--add-header", "User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
         ]
-        # Usar cookies se disponível
-        if COOKIES_FILE.exists():
-            cmd += ["--cookies", str(COOKIES_FILE)]
+        if is_tiktok:
+            cmd += ["--extractor-args", "tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com"]
+    else:
+        # Fallback: user-agent do app TikTok Android
+        cmd += [
+            "--format", "best",
+            "--add-header", "User-Agent:com.zhiliaoapp.musically/2022600030 (Linux; U; Android 12; en_US; Pixel 4; Build/SQ3A.220705.004)",
+        ]
 
     cmd.append(url)
     return cmd
@@ -66,60 +69,50 @@ def _build_cmd(url: str, out_tmpl: str) -> list[str]:
 
 @router.post("/download")
 async def download_video(body: DownloadRequest, x_api_secret: str = Header(...)):
-    """Baixa vídeo do Instagram ou TikTok e retorna os bytes."""
     _auth(x_api_secret)
 
     url = body.url.strip()
     if not SUPPORTED.search(url):
-        raise HTTPException(400, "URL não suportada. Use links do Instagram ou TikTok.")
+        raise HTTPException(400, "URL nao suportada. Use links do Instagram ou TikTok.")
 
     job_dir = TMP / uuid.uuid4().hex
     job_dir.mkdir(parents=True, exist_ok=True)
     out_tmpl = str(job_dir / "%(title).50s.%(ext)s")
 
-    cmd = _build_cmd(url, out_tmpl)
-    logger.info(f"[download] {url}")
-
+    # Tentativa 1
+    cmd = _build_cmd(url, out_tmpl, attempt=1)
+    logger.info(f"[download] tentativa 1: {url}")
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
-        raise HTTPException(408, "Timeout ao baixar o vídeo.")
+        raise HTTPException(408, "Timeout ao baixar o video.")
 
-    # Se falhou com TikTok, tentar com abordagem alternativa
-    if result.returncode != 0 and "tiktok" in url.lower():
-        logger.warning(f"[download] Tentativa 1 falhou, tentando fallback TikTok...")
-        cmd_alt = [
-            "yt-dlp",
-            "--no-playlist",
-            "--format", "best",
-            "--output", out_tmpl,
-            "--no-warnings",
-            "--quiet",
-            "--no-check-certificates",
-            "--add-header", "User-Agent:com.zhiliaoapp.musically/2022600030 (Linux; U; Android 12; en_US; Pixel 4; Build/SQ3A.220705.004; Cronet/58.0.2991.0)",
-            url,
-        ]
-        result = subprocess.run(cmd_alt, capture_output=True, text=True, timeout=120)
+    # Tentativa 2 se falhou
+    if result.returncode != 0:
+        logger.warning(f"[download] tentativa 1 falhou, tentando fallback...")
+        cmd2 = _build_cmd(url, out_tmpl, attempt=2)
+        try:
+            result = subprocess.run(cmd2, capture_output=True, text=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            raise HTTPException(408, "Timeout ao baixar o video.")
 
     if result.returncode != 0:
         err = result.stderr.strip()[:400]
-        logger.error(f"[download] falhou: {err}")
-
-        # Mensagem de erro amigável
-        if "403" in err or "status code 0" in err or "status code 10240" in err:
+        logger.error(f"[download] falhou definitivamente: {err}")
+        is_tiktok = "tiktok.com" in url
+        if is_tiktok and not PROXY_URL:
             raise HTTPException(422,
-                "TikTok bloqueou o download pelo IP do servidor. "
-                "Envie o vídeo direto como arquivo .mp4 ou use o Instagram.")
+                "TikTok bloqueou o download. Configure PROXY_URL no Railway "
+                "ou envie o video direto como arquivo .mp4.")
         raise HTTPException(422, f"Falha no download: {err}")
 
     mp4_files = list(job_dir.glob("*.mp4"))
     if not mp4_files:
-        # Tentar qualquer arquivo de vídeo
         all_files = list(job_dir.glob("*"))
         if all_files:
             mp4_files = [all_files[0]]
         else:
-            raise HTTPException(500, "Arquivo não encontrado após download.")
+            raise HTTPException(500, "Arquivo nao encontrado apos download.")
 
     mp4 = mp4_files[0]
     size_mb = round(mp4.stat().st_size / (1024 * 1024), 2)
@@ -134,17 +127,3 @@ async def download_video(body: DownloadRequest, x_api_secret: str = Header(...))
             "X-Size-MB":  str(size_mb),
         },
     )
-
-
-@router.post("/cookies/tiktok")
-async def set_tiktok_cookies(
-    cookies_content: str,
-    x_api_secret: str = Header(...),
-):
-    """Salva cookies do TikTok para melhorar compatibilidade de download."""
-    _auth(x_api_secret)
-    try:
-        COOKIES_FILE.write_text(cookies_content)
-        return {"ok": True, "message": "Cookies salvos com sucesso."}
-    except Exception as e:
-        raise HTTPException(500, f"Erro ao salvar cookies: {e}")
