@@ -10,6 +10,8 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+# Atualizar yt-dlp para versão mais recente (TikTok muda frequentemente)
+RUN pip install --no-cache-dir --upgrade yt-dlp
 
 COPY . .
 
