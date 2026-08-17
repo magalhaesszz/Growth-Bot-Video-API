@@ -10,7 +10,7 @@ from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from config import API_SECRET
+from core.config import API_SECRET
 
 logger = logging.getLogger("video-api.download")
 router = APIRouter()
