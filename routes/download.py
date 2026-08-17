@@ -52,6 +52,10 @@ async def download_video(body: DownloadRequest, x_api_secret: str = Header(...))
         "--output", out_tmpl,
         "--no-warnings",
         "--quiet",
+        # Ignorar erros de geo/disponibilidade e tentar fallback
+        "--ignore-errors",
+        # User-agent de browser para evitar bloqueios
+        "--add-header", "User-Agent:Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36",
         url,
     ]
 
