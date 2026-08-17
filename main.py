@@ -42,6 +42,11 @@ app.add_middleware(
 
 app.include_router(video_router, prefix="/api/v1", tags=["vídeo"])
 
+from routes.download import router as download_router
+from routes.edit import router as edit_router
+app.include_router(download_router, prefix="/api/v1", tags=["download"])
+app.include_router(edit_router, prefix="/api/v1", tags=["edição"])
+
 
 @app.get("/", tags=["health"])
 async def root():
