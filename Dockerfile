@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 # Instala FFmpeg diretamente via apt — garantido no Railway
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg && \
+    apt-get install -y --no-install-recommends ffmpeg python3-pip curl && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
