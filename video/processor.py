@@ -148,9 +148,17 @@ def build_filter(cfg: dict, params: dict, src_w: int, src_h: int) -> str:
         else:
             vf.append(f"delogo=x={x}:y={y}:w={mw}:h={mh}")
 
-    detected_crop = cfg.get("_detected_crop")
-    if detected_crop:
-        vf.append("crop=" + ":".join(str(int(value)) for value in detected_crop))
+    # Crop manual (definido pelo usuario no editor) tem prioridade
+    manual_crop = cfg.get("manual_crop")
+    if manual_crop and all(k in manual_crop for k in ("w", "h", "x", "y")):
+        w, h = int(manual_crop["w"]), int(manual_crop["h"])
+        x, y = int(manual_crop["x"]), int(manual_crop["y"])
+        if w > 0 and h > 0:
+            vf.append(f"crop={w}:{h}:{x}:{y}")
+    else:
+        detected_crop = cfg.get("_detected_crop")
+        if detected_crop:
+            vf.append("crop=" + ":".join(str(int(value)) for value in detected_crop))
 
     vf += [
         f"setpts=PTS/{speed}",
