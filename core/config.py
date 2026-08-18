@@ -42,7 +42,7 @@ DEFAULT_CONFIG = {
     "saturation_range": [-0.02, 0.02],
     "zoom_range":     [1.01, 1.03],
     "fix_mirror":     False,
-    "flip_chance":    0.5,
+    "flip_chance":    0.0,
     "watermark_masks": [],
     "antiban":        True,
     "auto_crop_borders": True,      # remove letterbox/pillarbox preto ou branco
