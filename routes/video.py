@@ -309,6 +309,23 @@ async def salvar_editor_config(token: str, config: dict = Body(...)):
         }
     except (KeyError, TypeError, ValueError):
         raise HTTPException(400, "Configuração inválida.")
+
+    # Crop manual (opcional) — recorte de faixas/titulos no video original
+    manual_crop = config.get("manual_crop")
+    if manual_crop:
+        try:
+            values["manual_crop"] = {
+                "w": max(1, int(manual_crop["w"])),
+                "h": max(1, int(manual_crop["h"])),
+                "x": max(0, int(manual_crop["x"])),
+                "y": max(0, int(manual_crop["y"])),
+            }
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(400, "Crop manual inválido.")
+    elif manual_crop is None and "manual_crop" in config:
+        # Envio explicito de null remove o crop manual
+        values["manual_crop"] = None
+
     _editor(token)["config"].update(values)
     return {"ok": True}
 
