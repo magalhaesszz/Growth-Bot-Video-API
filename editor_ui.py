@@ -43,6 +43,8 @@ button.secondary{{background:#1c2f43;color:#9fb3c8}}
   </div>
   <div class="hint">Toque e arraste para criar a área. Arraste o canto para redimensionar.</div>
   <div class="panel">
+    <img id="cropPreview" style="width:100%;border-radius:10px;display:none;margin-bottom:10px;border:1px solid #29445f">
+    <button class="secondary" id="previewCrop">Ver preview do recorte</button>
     <button id="saveCrop">Salvar recorte</button>
     <button class="secondary" id="clearCrop">Remover recorte (usar vídeo inteiro)</button>
     <div id="cropStatus"></div>
@@ -163,6 +165,15 @@ cropHandle.onpointermove=e=>{{
 }};
 cropHandle.onpointerup=()=>{{cropResizing=false}};
 
+const cropPreview=document.querySelector('#cropPreview');
+document.querySelector('#previewCrop').onclick=async()=>{{
+  if(!crop){{cropStatus.textContent='Desenhe uma área primeiro.';return}}
+  cropStatus.textContent='Gerando preview...';
+  const url=`${{base}}/preview_crop?w=${{Math.round(crop.w)}}&h=${{Math.round(crop.h)}}&x=${{Math.round(crop.x)}}&y=${{Math.round(crop.y)}}&t=${{Date.now()}}`;
+  cropPreview.src=url; cropPreview.style.display='block';
+  cropPreview.onload=()=>{{cropStatus.textContent='Preview gerado — assim ficará o vídeo.'}};
+  cropPreview.onerror=()=>{{cropStatus.textContent='Erro ao gerar preview.'}};
+}};
 document.querySelector('#saveCrop').onclick=async()=>{{
   if(!crop){{cropStatus.textContent='Desenhe uma área primeiro.';return}}
   cropStatus.textContent='Salvando...';
