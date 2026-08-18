@@ -299,6 +299,25 @@ async def editor_config(token: str):
     return _editor(token)["config"]
 
 
+@router.get("/editor/{token}/preview_crop")
+async def editor_preview_crop(token: str, w: int, h: int, x: int, y: int):
+    """Gera um frame recortado em tempo real para preview no editor."""
+    session = _editor(token)
+    frame_path = session["frame_path"]
+    preview_path = frame_path.replace(".jpg", "_crop_preview.jpg")
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-i", frame_path,
+        "-vf", f"crop={max(1,w)}:{max(1,h)}:{max(0,x)}:{max(0,y)}",
+        "-frames:v", "1", "-q:v", "3",
+        preview_path,
+    ]
+    proc = await run_in_threadpool(subprocess.run, cmd, capture_output=True, text=True, timeout=15)
+    if proc.returncode != 0 or not os.path.exists(preview_path):
+        raise HTTPException(500, "Não foi possível gerar o preview do recorte.")
+    return FileResponse(preview_path, media_type="image/jpeg")
+
+
 @router.put("/editor/{token}/config")
 async def salvar_editor_config(token: str, config: dict = Body(...)):
     try:
