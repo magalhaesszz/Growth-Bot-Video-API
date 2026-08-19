@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from routes.video import router as video_router
+from routes.editor_batch import router as editor_batch_router
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -41,6 +42,7 @@ app.add_middleware(
 )
 
 app.include_router(video_router, prefix="/api/v1", tags=["vídeo"])
+app.include_router(editor_batch_router, prefix="/api/v1", tags=["editor em massa"])
 
 from routes.download import router as download_router
 from routes.edit import router as edit_router
